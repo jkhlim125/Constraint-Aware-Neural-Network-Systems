@@ -1,107 +1,44 @@
 # Constraint-Aware Neural Network Systems
 
-This repository documents my UROP 1100 research work on hardware-efficient neural networks and signal classification.
+UROP 1100 research (HKUST, Advisor: Prof. Wei Zhang) on **hardware-efficient neural networks** —
+training and pruning networks so that FPGA cost (pruned fan-in, packable LUT structure) is part of
+the objective, not bolted on after. Three connected parts:
 
-The project is organized into two connected parts:
+| Folder | What it covers | Headline result |
+|---|---|---|
+| [**LutNet/**](LutNet) | Analysis + pruning-correctness fix for a LUT-CNN framework (CIFAR-10) | Fixed a tie-breaking pruning bug (682 → **691**, exact target); mapped the accuracy–hardware frontier (Spearman ρ = **−0.96**), up to **86% pin / 81% slice** reduction |
+| [**RadioML/**](RadioML) | Conventional 1-D CNN modulation classification + structured failure analysis | Baseline **60.36%**, two-branch V3 **61.90%**; diagnosed AM-SSB "sink" (**72%**) and WBFM → AM-DSB confusion (**63.6%**) |
+| [**RadioML-LUT/**](RadioML-LUT) | Porting the LUT hardware-aware workflow onto RadioML 1-D IQ | Ablation: pruning-first **40%** vs no-prune control **29%** under full hardening (**+11 pts**); ≈38% pin pruning |
 
-- **LutNet**: hardware-aware pruning and packing for LUT-based neural networks targeting FPGA efficiency
+The common question across all three:
 
-- **RadioML**: CNN-based modulation classification experiments for studying representation learning under noisy conditions
+> How should model structure and feature representation be designed to improve **both** learning
+> behavior and hardware efficiency?
 
-Although the two parts use different datasets and models, they are connected by a common question:
-
-> How can model structure and feature representation be designed to improve both learning behavior and hardware efficiency?
+`LutNet/` establishes the hardware-aware method and its trade-offs; `RadioML/` builds intuition for
+a new signal domain and where models fail; `RadioML-LUT/` brings the two together by running the
+hardware-aware workflow on that domain.
 
 ---
 
-1. LutNet: Hardware-Aware Pruning and FPGA Efficiency
+## My contributions
 
-The LutNet/ directory focuses on analyzing and debugging a LUT-based neural network training pipeline.
+- Reverse-engineered and analyzed an existing LUT-CNN training/pruning pipeline.
+- Found and fixed a **sensitivity-pruning correctness bug** caused by threshold ties.
+- Ran a 40+ configuration sweep of the accuracy ↔ hardware trade-off and produced the analysis figures.
+- Ported the LUT operators and staged schedule to RadioML 1-D IQ, and ran the pruning-vs-no-prune ablation.
+- Built the failure-analysis tooling (class/SNR breakdowns, confusion, confidence-margin analysis).
 
-Key topics include:
+## Scope note
 
-* sensitivity-based global pruning
-* threshold tie problems
-* pruning consistency
-* structural packing
-* FPGA-oriented resource reduction
+This repository emphasizes analysis, adaptation, and experiment structure. It does **not** include
+the full original collaborative LUT framework; some code is reorganized to highlight my direct
+contributions. All result files and figures are my own experiment outputs.
 
-This part of the project is centered on understanding why naive pruning can fail in practice, especially when many sensitivity values are tied at the threshold, and how improved tie-breaking logic leads to more stable sparsity control and better hardware mapping behavior.
+## Repository layout
 
-See LutNet/README.md￼ for details.
-
-⸻
-
-2. RadioML: CNN-Based Modulation Classification
-
-The RadioML/ directory focuses on modulation classification using the RadioML dataset.
-
-This part of the project investigates:
-
-* baseline 1D CNN performance on raw IQ signals
-* class-wise and SNR-wise failure patterns
-* frequency-aware feature engineering
-* branch-based architectures using IQ and instantaneous frequency (IF)
-
-A major goal here is not just improving accuracy, but also understanding why the model fails under certain conditions, especially:
-
-* low-SNR collapse
-* AM-SSB sink behavior
-* WBFM misclassification
-
-See RadioML/README.md￼ for details.
-
-⸻
-
-My Main Contributions
-
-Across the repository, my work includes:
-
-* analyzing and reverse-engineering research code pipelines
-* writing debugging and analysis scripts
-* comparing experiment runs and summarizing trade-offs
-* studying structured failure modes using plots, summaries, and confusion-style analysis
-* reorganizing experiments into clearer model / data / training / analysis workflows
-
-⸻
-
-Notes
-
-* This repository emphasizes analysis, interpretation, and experiment structure
-* It does not include the full original collaborative research codebase
-* Some code has been simplified or reorganized to highlight my direct contributions more clearly
-
-⸻
-
-Directory Guide
-
-LutNet/
-
-Use this folder if you want to understand:
-
-* hardware-aware pruning logic
-* threshold tie problems
-* FPGA efficiency trade-offs
-
-RadioML/
-
-Use this folder if you want to understand:
-
-* CNN baselines for modulation classification
-* how different feature representations affect performance
-* how failure modes change across classes and SNR levels
-
-⸻
-
-Summary
-
-This repository reflects a progression from:
-
-* hardware-aware pruning and structural efficiency
-    to
-* representation-aware learning and model behavior analysis
-
-Together, these experiments helped me understand both:
-
-* how models are optimized for hardware constraints
-* how feature and architecture choices affect learning performance
+```
+LutNet/        analysis_code/  figures/  results/            + README
+RadioML/       models/ data/ training/ analysis/ figures/ results/   + README
+RadioML-LUT/   figures/ results/                             + README
+```

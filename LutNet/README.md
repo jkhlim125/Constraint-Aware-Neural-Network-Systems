@@ -1,310 +1,85 @@
 # LutNet: Hardware-Aware Pruning and FPGA Efficiency
 
-This project explores hardware-aware training and pruning strategies for LUT-based neural networks, with the goal of achieving efficient FPGA deployment while maintaining strong classification performance.
+Analysis and pruning-correctness work on a LUT-based neural-network training pipeline (CIFAR-10),
+where the goal is FPGA efficiency — reducing LUTs, slices, and input pins — without collapsing
+accuracy. On an FPGA, resource usage is **not** proportional to parameter count: LUT packing and
+input fan-in dominate, so pruning has to be measured in hardware terms, not just sparsity.
 
-Unlike conventional neural network optimization, this work focuses on **bridging the gap between algorithmic pruning and hardware realization**, particularly under LUT constraints.
-
----
-
-# 1. Motivation
-
-Traditional neural network pruning methods focus on reducing parameter count or improving sparsity. However, these approaches do not necessarily translate to actual hardware efficiency.
-
-In FPGA-based systems:
-- Resource usage (LUTs, slices, routing) is not directly proportional to parameter count
-- Structural constraints (e.g., LUT packing) significantly affect efficiency
-- Global pruning decisions can introduce instability in both accuracy and hardware mapping
-
-This project addresses these gaps by analyzing and improving pruning behavior under hardware constraints.
+> Scope note — this folder emphasizes analysis and the pruning fix. It does not include the full
+> original collaborative LUT framework. Result files and figures are my own outputs.
 
 ---
 
-# 2. Core Objectives
+## 1. The bug: naive threshold pruning silently misses its target
 
-The project is built around three key goals:
+Global sensitivity pruning keeps weights whose score ≥ a quantile threshold. But many scores land
+**exactly on** the threshold (a "tie region"), and naive selection doesn't decide among them — so
+the actual prune count drifts off target.
 
-### (1) Understand LUT-based neural network training pipeline
-- Analyze how LUT layers replace MAC operations
-- Understand training flow including warmup, pairing, and pruning
+![Naive vs tie-aware pruning](figures/pruning_logic.png)
 
-### (2) Identify and debug pruning instability
-- Investigate global threshold-based pruning behavior
-- Analyze failure cases caused by sensitivity value ties
+Measured on one tensor (`results/threshold_check_summary.txt`):
 
-### (3) Evaluate hardware-aware trade-offs
-- Study relationship between accuracy and FPGA resource usage
-- Analyze impact of pruning on slice and pin reduction
+| | value |
+|---|---|
+| tensor elements | 1,152 |
+| sparsity target | 0.60 |
+| threshold | 0.18 |
+| **target prune count** | **691** |
+| naive prune count | 682  (**−9**, 28 values tied at threshold) |
+| tie-aware prune count | **691  (error 0)** |
 
----
+**Fix:** explicitly rank and select within the tie region to hit the exact target. This restores
+accurate sparsity control — which matters because packing/pin estimates downstream assume the
+target was met.
 
-# 3. Pipeline Overview
+## 2. The training behavior: pruning is a discrete structural shift
 
-![Pipeline](figures/lut_pipeline.png)
+![Training phase transition](figures/training_phase_transition.png)
 
-The training pipeline consists of the following stages:
+Training is not smooth. Warmup is stable; the pruning step causes a sudden accuracy drop; a recovery
+phase lets the model adapt to the new structure. Treating pruning as a structural event (with a
+recovery budget) — rather than a smooth regularizer — is what keeps the runs stable.
 
-### 3.1 LUT-based Neural Network
-- Replaces traditional MAC operations with LUT-based computation
-- Enables efficient mapping onto FPGA logic blocks
+## 3. The trade-off: the prepared frontier beats the naive baseline
 
-### 3.2 Warmup Training Phase
-- Model is trained without pruning
-- Establishes stable baseline performance
+I swept sparsity × pack-ratio across 40+ runs and plotted accuracy against hardware reduction.
 
-### 3.3 Pairing & Structural Regularization
-- Introduces structural constraints between channels
-- Uses BIB (Bi-directional Interaction Based) regularization
+![Pareto: max accuracy vs pin reduction](figures/fig2_pareto_max_acc_vs_pin_reduction.png)
 
-### 3.4 Pruning Stage
-- Computes sensitivity scores for each input
-- Applies global threshold-based pruning
-- Introduces tie-breaking to resolve threshold ambiguity
+- The pruning/pairing-**prepared** frontier (green) stays **above** the naive baseline (blue) at
+  every pin-reduction level — same hardware saving, more accuracy retained. Spearman ρ = **−0.96**
+  (p < 1e-4) for max accuracy vs pin reduction.
+- Aggressive configs reach **≈86% pin / ≈81% slice reduction**; the best run holds **80.96% accuracy
+  at 84% pin / 71% slice reduction** (`results/log_comparison_table.csv`).
 
-### 3.5 Structural Packing
-- Groups pruned inputs into LUT structures
-- Optimizes mapping efficiency
+![Accuracy drop vs pin reduction](figures/fig4_accuracy_drop_vs_pin_reduction.png)
+![Best per pack ratio](figures/fig5_best_per_pack_ratio.png)
 
-### 3.6 FPGA Mapping / Physical Report
-- Evaluates:
-  - Slice reduction
-  - Pin reduction
-- Measures actual hardware efficiency
+## 4. Analysis code
 
----
+| Script | Purpose |
+|---|---|
+| `analysis_code/check_pruning_consistency.py` | Detects threshold ties; compares target vs naive vs tie-aware prune counts (the bug above). |
+| `analysis_code/compare_packratio_runs.py` | Compares runs across pack ratios; builds the trade-off tables. |
+| `analysis_code/parse_train_log.py` | Parses accuracy/loss/pruning events from raw training logs. |
+| `analysis_code/l1_paper_figures.py` | Generates the paper-style Pareto / trade-off figures. |
 
-# 4. Key Problem: Global Threshold Instability
+## 5. Results
 
-One of the most important findings in this project is:
+| File | Contents |
+|---|---|
+| `results/threshold_check_summary.txt` | Tie statistics + prune-count errors (the bug fix). |
+| `results/log_comparison_table.csv` | Per-run accuracy vs slice / pin reduction across configs. |
+| `results/lutnet_summary_metrics.csv` | Best/final accuracy, sparsity flags per log. |
 
-> **Naive global threshold pruning is unstable in practice**
+## Key takeaways
 
----
+1. Naive global-threshold pruning fails when scores tie; exact sparsity needs explicit tie-breaking.
+2. Pruning is a discrete structural shift — budget a recovery phase.
+3. Hardware efficiency ≠ sparsity: measure pins and slices, and the prepared frontier dominates the baseline.
 
-## 4.1 Root Cause
+## Future directions
 
-Many sensitivity values are **exactly equal** (due to quantization-like behavior).
-
-This creates a "tie region" at the threshold.
-
----
-
-## 4.2 Naive Approach Failure
-
-![Pruning](figures/pruning_logic.png)
-
-Naive pruning:
-- Keeps all values ≥ threshold
-- Does not explicitly handle ties
-
-Result:
-- Target sparsity is NOT achieved
-- Prune count mismatch occurs
-
----
-
-## 4.3 Improved Solution: Tie-Breaking
-
-We introduce an explicit tie-breaking mechanism:
-
-- Identify elements equal to threshold
-- Select a subset to prune
-- Ensure exact target prune count
-
-This leads to:
-- Stable pruning behavior
-- Accurate sparsity control
-- Better alignment with hardware constraints
-
----
-
-# 5. Training Behavior Analysis
-
-![Training](figures/training_phase_transition.png)
-
-Training follows a non-trivial pattern:
-
-### Phase 1: Warmup
-- Stable accuracy
-- No pruning applied
-
-### Phase 2: Pruning Activation
-- Structural change occurs
-- Sudden accuracy drop
-
-### Phase 3: Recovery
-- Model adapts to new structure
-- Accuracy stabilizes
-
----
-
-## Key Insight
-
-> Pruning is not a smooth optimization process —  
-> it introduces a **discrete structural shift**.
-
----
-
-# 6. Hardware-Aware Trade-off
-
----
-
-## 6.1 Accuracy vs Pin Reduction
-
-![Pareto](figures/fig2_pareto_max_acc_vs_pin_reduction.png)
-
-- Shows trade-off between:
-  - Model accuracy
-  - Hardware efficiency
-
----
-
-## 6.2 Accuracy Drop vs Resource Reduction
-
-![Drop](figures/fig4_accuracy_drop_vs_pin_reduction.png)
-
-- Increasing pruning leads to:
-  - More resource savings
-  - But larger accuracy degradation
-
----
-
-## 6.3 Pack Ratio Analysis
-
-![Pack Ratio](figures/fig5_best_per_pack_ratio.png)
-
-- Different pack ratios affect:
-  - Model performance
-  - Hardware utilization
-
----
-
-# 7. Analysis Code
-
-All analysis in this project is supported by custom Python scripts.
-
----
-
-## 7.1 check_pruning_consistency.py
-
-Purpose:
-- Detect instability in global pruning
-
-Key Features:
-- Analyzes threshold ties
-- Compares:
-  - Target prune count
-  - Actual prune count
-- Implements improved tie-breaking logic
-
----
-
-## 7.2 compare_packratio_runs.py
-
-Purpose:
-- Compare multiple experimental runs
-
-Key Features:
-- Evaluates accuracy vs pack ratio
-- Supports trade-off visualization
-
----
-
-## 7.3 parse_train_log.py
-
-Purpose:
-- Extract structured data from raw training logs
-
-Key Features:
-- Parses:
-  - accuracy
-  - loss
-  - pruning events
-- Enables training phase analysis
-
----
-
-## 7.4 l1_paper_figures.py
-
-Purpose:
-- Generate analysis figures
-
-Key Features:
-- Produces:
-  - distribution plots
-  - comparison graphs
-- Used for paper-style visualization
-
----
-
-# 8. Results
-
----
-
-## 8.1 lutnet_summary_metrics.csv
-
-Contains:
-- Accuracy
-- Slice reduction
-- Pin reduction
-
----
-
-## 8.2 log_comparison_table.csv
-
-Contains:
-- Run-level comparison
-- Different pruning configurations
-
----
-
-## 8.3 threshold_check_summary.txt
-
-Contains:
-- Pruning consistency analysis
-- Threshold tie statistics
-
----
-
-# 9. Key Insights
-
-### Insight 1
-Global threshold pruning fails when many values are tied.
-
----
-
-### Insight 2
-Exact sparsity control requires explicit tie-breaking.
-
----
-
-### Insight 3
-Pruning introduces structural discontinuity in training.
-
----
-
-### Insight 4
-Hardware efficiency is not directly correlated with sparsity.
-
----
-
-# 10. Future Directions
-
-- Structure-aware pruning (channel-level / block-level)
-- Alternative architectures (CNN, ResNet)
-- Extension to RadioML classification
-- Improved FPGA mapping strategies
-
----
-
-# 11. Summary
-
-This project demonstrates that:
-
-> Hardware-aware optimization requires more than standard pruning techniques.
-
-By combining:
-- pruning analysis
-- tie-breaking strategies
-- hardware-aware evaluation
-
-we move closer to practical deployment of LUT-based neural networks.
+Structure-aware (block/channel) pruning · alternative backbones · extension to RadioML
+(see [`../RadioML-LUT`](../RadioML-LUT)) · true FPGA-synthesis validation of the packing estimates.

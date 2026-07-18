@@ -1,281 +1,73 @@
-# RadioML: CNN-Based Modulation Classification and Representation Analysis
+# RadioML: CNN Modulation Classification & Failure Analysis
 
-This project explores modulation classification on the RadioML dataset using CNN-based architectures, with the goal of understanding how signal representation and model structure affect performance under noisy conditions.
+Modulation classification on RadioML 2016.10a (11 classes, `[B, 2, 128]` IQ, −20 to +18 dB SNR)
+using 1-D CNNs. The emphasis is **structured failure analysis**, not chasing accuracy: overall
+numbers move little, but *where* and *why* the model fails is highly systematic — and that diagnosis
+is what motivates the LUT port in [`../RadioML-LUT`](../RadioML-LUT).
 
-Unlike standard accuracy-focused classification experiments, this work emphasizes **structured failure analysis**, feature representation, and branch-based modeling to understand why certain classes remain difficult even when overall accuracy appears reasonable.
-
----
-
-# 1. Motivation
-
-Radio signal classification is challenging because performance depends not only on the model architecture, but also on how the signal is represented.
-
-In the RadioML setting:
-- input signals are short IQ sequences rather than images or text
-- performance varies significantly across SNR conditions
-- some classes remain difficult even when others are classified well
-- raw IQ signals may not expose frequency-related structure clearly enough for a baseline CNN
-
-This project investigates these issues by building baseline and branch-based CNN models, then analyzing their failure patterns in detail.
+> Scope note — result files and figures are my own experiment outputs.
 
 ---
 
-# 2. Core Objectives
+## 1. Models compared
 
-The project is built around three key goals:
+| Model | Input | Test accuracy |
+|---|---|---|
+| Baseline 1-D CNN | raw IQ | **60.36%** |
+| IF-feature CNN | + instantaneous frequency | 60.17% |
+| Two-branch V3 | IQ + IF, separate branches | **61.90%** (best) |
 
-### (1) Establish a baseline CNN on RadioML
-- Train a standard 1D CNN on raw IQ signals
-- Use it as a reference point for later experiments
+![Baseline class × SNR](figures/analysis_heatmaps.png)
 
-### (2) Analyze structured model failure
-- Study class-wise and SNR-wise accuracy
-- Identify persistent confusion patterns and bottleneck classes
+Accuracy is strongly **SNR-bound**: near-chance below −6 dB, 95%+ above +6 dB. Adding features
+barely moves the overall number — the interesting result is the failure structure.
 
-### (3) Test whether explicit frequency-aware features help
-- Add instantaneous-frequency-based input variants
-- Compare baseline and branch-based architectures
+## 2. Structured failure modes (baseline)
 
----
+The model does not fail randomly. From `results/summary_baseline.txt` and `results/results_comparison.csv`:
 
-# 3. Problem Setup
+- **Confidence separates right from wrong** — correct predictions avg confidence **0.83** vs
+  **0.42** for incorrect (margin 0.74 vs 0.23). Errors are uncertainty-driven, not confident-wrong.
+- **AM-SSB is a "sink"** — under noise, other classes collapse *into* AM-SSB: **4,222 sink
+  predictions vs 1,654 correct (≈72% sink rate)**, and sink rate rises to ~90% below −14 dB.
+- **WBFM is the hardest class** — **28.1%** overall (40.6% high-SNR, **3.67%** low-SNR), and it
+  leaks systematically into AM-DSB: **915 cases (63.6%)**.
 
-The task is modulation classification using RadioML IQ samples.
+![IF-feature heatmap](figures/analysis_heatmap_ifreq.png)
+![Two-branch V3 heatmap](figures/analysis_heatmap_branch_v3.png)
 
-### Input
-- IQ signal sequence
-- shape typically adapted to `[B, 2, 128]`
+The two-branch V3 lifts overall accuracy to 61.90% and most classes to 55–93%, but **WBFM stays
+stuck at 29.6%** (AM-DSB confusion 60.3%) — confirming this is a **representation** limit, not a
+capacity one. Raw IQ doesn't expose the frequency structure WBFM needs, and adding a branch only
+partly helps.
 
-### Output
-- predicted modulation class
+## 3. Why this matters for the LUT work
 
-The dataset includes multiple analog and digital modulation types, and performance depends strongly on SNR level.
+These are the same fine amplitude/phase classes (AM-SSB, WBFM, high-order QAM) that collapse when
+the LUT-CNN in [`../RadioML-LUT`](../RadioML-LUT) is pushed to hard binary activations — so the
+failure analysis here directly explains the hardware bottleneck there.
 
----
+## 4. Code
 
-# 4. Baseline Model
+```
+models/     baseline_cnn.py · ifreq.py · branch_v3.py
+data/       radio_dataloader*.py           (IQ / IF / branch variants)
+training/   train_cnn*.py                  (baseline / ifreq / branch_v3)
+analysis/   analyze_model_detailed.py · analyze_ifreq.py · analyze_branch_v3.py
+            analyze_confidence_and_failure.py   (the confidence/sink/WBFM diagnosis)
+```
 
-The baseline model is a standard 1D CNN operating directly on raw IQ input.
+## 5. Results
 
-![Baseline Heatmap](figures/analysis_heatmaps.png)
+| File | Contents |
+|---|---|
+| `results/results_comparison.csv` | All per-class / per-SNR numbers, sink stats, confusion counts. |
+| `results/summary_baseline.txt` | Baseline confidence + WBFM + AM-SSB failure diagnosis. |
+| `results/summary_branch_v3.txt` | V3 class-wise accuracy and WBFM confusion breakdown. |
+| `results/summary_ifreq.txt` | IF-feature experiment summary. |
 
-The network uses:
-- stacked Conv1d layers
-- BatchNorm1d
-- ReLU
-- MaxPool1d
-- fully connected classifier layers
+## Key takeaways
 
-The baseline serves two roles:
-- provide a reference accuracy
-- reveal which failure modes are structural rather than incidental
-
----
-
-# 5. Key Problem: Structured Failure in RadioML Classification
-
-One of the most important findings in this project is:
-
-> **The baseline CNN does not fail randomly; it fails in highly structured ways.**
-
----
-
-## 5.1 Low-SNR Collapse
-
-At low SNR, overall performance drops sharply.
-
-This indicates that the baseline CNN struggles to preserve useful signal structure under heavy noise.
-
----
-
-## 5.2 AM-SSB Sink Behavior
-
-In difficult cases, the model tends to over-predict AM-SSB.
-
-This means AM-SSB behaves like a sink class: when uncertainty is high, many other samples collapse into that prediction.
-
----
-
-## 5.3 WBFM Misclassification
-
-WBFM is one of the most difficult classes.
-
-A major observed pattern is:
-- WBFM is often misclassified as AM-DSB
-- this happens systematically rather than randomly
-
-This suggests that raw IQ input may not make frequency-related structure explicit enough for the baseline CNN.
-
----
-
-# 6. Frequency-Aware Experiments
-
-To address the limitations of raw IQ input, the project explores explicit frequency-related representations.
-
----
-
-## 6.1 Instantaneous Frequency (IF) Input
-
-![IF Heatmap](figures/analysis_heatmap_ifreq.png)
-
-The IF-based experiment adds a derived frequency-related feature to test whether making phase/frequency behavior more explicit improves performance.
-
-The motivation is:
-
-- raw IQ contains phase/frequency information implicitly
-- the baseline CNN may not extract that information effectively
-- explicit IF may help the model separate difficult modulation classes
-
----
-
-## 6.2 Branch-Based Model (V3)
-
-![Branch V3 Heatmap](figures/analysis_heatmap_branch_v3.png)
-
-The branch-v3 model introduces a modified architecture to process richer feature structure more effectively.
-
-Rather than relying on a single path to learn all signal characteristics, this model tests whether architectural separation improves robustness and classification behavior.
-
----
-
-## 6.3 Branch-Based Model (V3+)
-
-If available, additional branch variants can be compared in the same framework to test whether further structural refinement improves:
-- low-SNR robustness
-- difficult-class performance
-- overall consistency across SNR levels
-
----
-
-# 7. Analysis Code
-
-All major conclusions in this project are supported by custom analysis scripts.
-
----
-
-## 7.1 analyze_model_detailed.py
-
-Purpose:
-- Perform detailed baseline evaluation
-
-Key Features:
-- class-wise breakdown
-- SNR-wise breakdown
-- heatmap-oriented outputs
-
----
-
-## 7.2 analyze_ifreq.py
-
-Purpose:
-- Evaluate the IF-based experiment
-
-Key Features:
-- compares IF-based model behavior against baseline
-- generates summary metrics and heatmaps
-
----
-
-## 7.3 analyze_branch_v3.py
-
-Purpose:
-- Evaluate branch-v3 experiments
-
-Key Features:
-- analyze accuracy changes by class and SNR
-- compare performance against baseline and IF variants
-
----
-
-## 7.4 analyze_confidence_and_failure.py
-
-Purpose:
-- Study prediction confidence and error structure
-
-Key Features:
-- separates correct and incorrect predictions
-- helps interpret whether errors are ambiguous or systematic
-
----
-
-# 8. Results
-
----
-
-## 8.1 analysis_summary.txt
-
-Contains:
-- baseline summary metrics
-- class/SNR evaluation outputs
-
----
-
-## 8.2 analysis_summary_branch_v3.txt
-
-Contains:
-- branch-v3 evaluation summary
-- comparison against baseline
-
----
-
-## 8.3 analysis_summary_ifreq.txt
-
-Contains:
-- IF experiment summary
-- feature-based performance observations
-
----
-
-## 8.4 analysis_tables.csv
-
-Contains:
-- compact experiment metrics
-- table-friendly summaries for comparison
-
----
-
-# 9. Key Insights
-
-### Insight 1
-Overall accuracy is not enough; class- and SNR-level analysis is necessary.
-
----
-
-### Insight 2
-Failure patterns are structured, not random.
-
----
-
-### Insight 3
-Raw IQ input is not always sufficient to expose frequency-related distinctions.
-
----
-
-### Insight 4
-Architecture and representation both matter; simply adding a feature does not guarantee improvement.
-
----
-
-# 10. Future Directions
-
-- stronger multi-branch architectures
-- more explicit phase/frequency modeling
-- improved low-SNR robustness
-- ResNet-style 1D CNN variants
-- tighter connection to hardware-aware model design explored in LutNet
-
----
-
-# 11. Summary
-
-This project demonstrates that:
-
-> Modulation classification performance depends not only on network capacity, but also on how signal structure is represented and analyzed.
-
-By combining:
-- baseline CNN training
-- structured failure analysis
-- frequency-aware feature experiments
-- branch-based architectures
-
-this work moves from simple model benchmarking toward a deeper understanding of representation bottlenecks in signal classification.
+1. Overall accuracy hides the story — class- and SNR-level analysis is required.
+2. Failures are structured: AM-SSB sink, WBFM → AM-DSB, all uncertainty-driven.
+3. Raw IQ under-exposes frequency structure; architecture and representation both matter, and adding a feature is not a guaranteed win.

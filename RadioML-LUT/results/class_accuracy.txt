@@ -1,0 +1,13 @@
+CLASS-WISE ACCURACY
+Class         Correct    Total   Accuracy %
+8PSK              741     2000       37.05
+AM-DSB            889     2000       44.45
+AM-SSB            116     2000        5.80
+BPSK              982     2000       49.10
+CPFSK            1052     2000       52.60
+GFSK             1036     2000       51.80
+PAM4              999     2000       49.95
+QAM16             328     2000       16.40
+QAM64             822     2000       41.10
+QPSK              779     2000       38.95
+WBFM             1130     2000       56.50
